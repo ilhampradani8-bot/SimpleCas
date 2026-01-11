@@ -83,22 +83,15 @@ async function logout() {
 }
 
 
-// UPDATE fungsi ini di main.js
 async function bukaAplikasi() {
-    // 1. Cek dulu, boleh masuk gak?
-    const bolehMasuk = await cekStatusBayar();
-    
-    // Kalau gak boleh masuk, STOP di sini. Jangan tampilkan data.
-    if (!bolehMasuk) return; 
-
-    // 2. Kalau boleh, lanjut buka aplikasi normal
     viewLogin.style.display = 'none';
     viewApp.classList.remove('hidden');
     viewApp.style.display = 'flex';
     
-    // Load Data
-    muatPengaturan(); // <
-    muatProfilToko();
+    // PENTING: Ambil data profil dari database segera setelah aplikasi terbuka
+    await muatProfilToko(); 
+    
+    // Load data lainnya
     ambilData();
     hitungOmzet();
 }
@@ -256,26 +249,7 @@ async function kirimInvoice(namaProduk, harga) {
 }
 
 
-async function hitungOmzet() {
-    // Ambil data untuk header
-    const { data } = await db.from('invoices').select('harga_terjual, created_at').limit(500);
-    
-    if (data) {
-        const hariIni = new Date().toLocaleDateString('en-CA');
-        const transaksiHariIni = data.filter(item => {
-            return new Date(item.created_at).toLocaleDateString('en-CA') === hariIni;
-        });
 
-        // Hitung Total Uang
-        const totalUang = transaksiHariIni.reduce((acc, item) => acc + item.harga_terjual, 0);
-        // Hitung Jumlah Transaksi
-        const totalTrx = transaksiHariIni.length;
-
-        // Update Header Baru
-        document.getElementById('total-omzet').innerText = 'Rp ' + Number(totalUang).toLocaleString('id-ID');
-        document.getElementById('total-trx').innerText = totalTrx;
-    }
-}
 
 // --- FITUR RESET OMZET (UPDATE) ---
 
@@ -315,19 +289,34 @@ async function resetOmzet() {
 // ==========================================
 
 async function muatProfilToko() {
-    const { data } = await db.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
-    
+    if (!currentUser) return;
+
+    const { data, error } = await db
+        .from('profiles')
+        .select('*')
+        .eq('id', currentUser.id)
+        .maybeSingle();
+
     if (data) {
-        namaTokoAktif = data.nama_toko || "SimpelKas";
+        // 1. Simpan ke variabel global (untuk teks WA)
+        namaTokoAktif = data.nama_toko || "Toko Saya";
         infoBank = data.bank || "";
         infoRekening = data.rekening || "";
-        infoFooter = data.footer || "Terima kasih!";
+        infoFooter = data.footer || "Terima kasih sudah berbelanja!";
+
+        // 2. Masukkan ke kolom input (biar tidak kosong saat dilihat)
+        if (document.getElementById('input-toko')) {
+            document.getElementById('input-toko').value = namaTokoAktif;
+            document.getElementById('input-bank').value = infoBank;
+            document.getElementById('input-norek').value = infoRekening;
+            document.getElementById('input-footer').value = infoFooter;
+        }
+        console.log("Data profil berhasil dimuat:", data);
+    
         
-        // Isi Form di Tab Akun
-        document.getElementById('input-toko').value = namaTokoAktif;
-        document.getElementById('input-bank').value = infoBank;
-        document.getElementById('input-norek').value = infoRekening;
-        document.getElementById('input-footer').value = infoFooter;
+        // 3. Update nama toko di dashboard utama (jika ada elemennya)
+        const elNamaToko = document.getElementById('nama-toko-display');
+        if (elNamaToko) elNamaToko.innerText = namaTokoAktif;
     }
 }
 
@@ -356,33 +345,51 @@ async function muatPengaturan() {
 }
 
 // --- 3. FUNGSI SIMPAN PENGATURAN (Dipanggil saat klik tombol) ---
+
 async function simpanPengaturan() {
+    // Ambil data dari input
+    const namaToko = document.getElementById('input-toko').value;
+    const bank = document.getElementById('input-bank').value;
+    const norek = document.getElementById('input-norek').value;
+    const footer = document.getElementById('input-footer').value;
+
     const dataUpdate = {
-        nama_toko: document.getElementById('input-toko').value,
-        bank: document.getElementById('input-bank').value,
-        rekening: document.getElementById('input-norek').value,
-        footer: document.getElementById('input-footer').value
+        id: currentUser.id, // ID User yang sedang login
+        nama_toko: namaToko,
+        bank: bank,
+        rekening: norek,
+        footer: footer
+        // Hapus update_at agar tidak bentrok dengan schema database
     };
 
-    Swal.fire({ title: 'Menyimpan...', didOpen: () => Swal.showLoading() });
+    Swal.fire({ title: 'Menyimpan ke Cloud...', didOpen: () => Swal.showLoading() });
 
+    // Gunakan UPSERT agar jika belum ada data, dia membuat baru (Insert)
     const { error } = await db
         .from('profiles')
-        .update(dataUpdate)
-        .eq('id', currentUser.id);
+        .upsert(dataUpdate, { onConflict: 'id' });
 
     if (error) {
         Swal.fire('Gagal', error.message, 'error');
+        console.error("Detail Error:", error);
     } else {
-        // Update variabel global saat itu juga agar teks WA berubah instan
-        namaTokoAktif = dataUpdate.nama_toko;
-        infoBank = dataUpdate.bank;
-        infoRekening = dataUpdate.rekening;
-        infoFooter = dataUpdate.footer;
+        // Update variabel global aplikasi secara instan
+        namaTokoAktif = namaToko;
+        infoBank = bank;
+        infoRekening = norek;
+        infoFooter = footer;
 
-        Swal.fire('Berhasil!', 'Pengaturan teks WA diperbarui.', 'success');
+        Swal.fire({
+            icon: 'success',
+            title: 'Berhasil Tersimpan!',
+            text: 'Data profil sudah sinkron dengan database.',
+            timer: 1500,
+            showConfirmButton: false
+        });
     }
 }
+
+
 
 // --- SISTEM LANGGANAN (PRO) ---
 
@@ -418,6 +425,42 @@ function bayarLangganan() {
 }
 
 
+async function hitungOmzet() {
+    // Ambil 10 transaksi terakhir untuk riwayat
+    const { data } = await db.from('invoices').select('*').order('created_at', { ascending: false }).limit(10);
+    
+    if (data) {
+        const hariIni = new Date().toLocaleDateString('en-CA');
+        const transaksiHariIni = data.filter(item => 
+            new Date(item.created_at).toLocaleDateString('en-CA') === hariIni
+        );
+
+        // 1. Update Header (Angka Biru di Atas)
+        const totalUang = transaksiHariIni.reduce((acc, item) => acc + item.harga_terjual, 0);
+        document.getElementById('total-omzet').innerText = 'Rp ' + Number(totalUang).toLocaleString('id-ID');
+        document.getElementById('total-trx').innerText = transaksiHariIni.length;
+
+        // 2. Tampilkan Riwayat di Tab Akun (Mencegah Undefined)
+        const listRiwayat = document.getElementById('list-riwayat');
+        if (listRiwayat) {
+            if (data.length === 0) {
+                listRiwayat.innerHTML = `<p class="text-[10px] text-gray-400 text-center py-4">Belum ada jualan</p>`;
+            } else {
+                listRiwayat.innerHTML = data.map(trx => `
+                    <div class="flex justify-between items-center border-b border-gray-50 pb-2">
+                        <div>
+                            <p class="text-xs font-medium text-gray-700">${trx.nama_produk || 'Produk'}</p>
+                            <p class="text-[9px] text-gray-400">${new Date(trx.created_at).toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</p>
+                        </div>
+                        <p class="text-xs font-bold text-green-600">Rp ${Number(trx.harga_terjual).toLocaleString('id-ID')}</p>
+                    </div>
+                `).join('');
+            }
+        }
+    }
+}
+
+// Perbaikan navigasi tab agar data dimuat ulang saat diklik
 function bukaTab(tabName) {
     const tabKasir = document.getElementById('tab-kasir');
     const tabAkun = document.getElementById('tab-akun');
@@ -427,19 +470,22 @@ function bukaTab(tabName) {
     if (tabName === 'kasir') {
         tabKasir.classList.remove('hidden');
         tabAkun.classList.add('hidden');
-        // Warna Tombol
-        navKasir.classList.remove('text-gray-400'); navKasir.classList.add('text-blue-600');
-        navAkun.classList.remove('text-blue-600'); navAkun.classList.add('text-gray-400');
+        navKasir.classList.replace('text-gray-400', 'text-blue-600');
+        navAkun.classList.replace('text-blue-600', 'text-gray-400');
     } else {
         tabKasir.classList.add('hidden');
         tabAkun.classList.remove('hidden');
-        // Warna Tombol
-        navAkun.classList.remove('text-gray-400'); navAkun.classList.add('text-blue-600');
-        navKasir.classList.remove('text-blue-600'); navKasir.classList.add('text-gray-400');
+        navAkun.classList.replace('text-gray-400', 'text-blue-600');
+        navKasir.classList.replace('text-blue-600', 'text-gray-400');
         
-        muatProfilToko();
+        // PENTING: Panggil muatPengaturan agar input terisi otomatis dari DB
+        muatPengaturan();
+        hitungOmzet();
     }
 }
+
+
+
 
 function kontakWA() {
     // WAJIB: Ganti ini dengan NOMOR WA ASLI kamu (Format 62...)
